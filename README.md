@@ -1,19 +1,21 @@
-# OddLabs AWR Recovery API v1.0
+# OddLabs AWR API - Pilot v2.0
 
-Pilot-ready backend for Autonomous Workforce Recovery.
+Autonomous Workforce Recovery API for the OddLabs AWR Base44 app.
 
-## Run locally
+## What v2.0 adds
 
-```bash
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
+- Dynamic worker scoring
+- Multi-visit recovery
+- Pair-care awareness
+- CSV imports for workers, clients, visits, constraints
+- Recommendation approval/rejection
+- Shift offer lifecycle
+- Audit log
+- Approved changes export
+- Coverage risk endpoint
+- Integration readiness endpoints
 
-Open `/docs`.
-
-## Railway
-
-Start command:
+## Railway start command
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port $PORT
@@ -22,22 +24,23 @@ uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ## Key endpoints
 
 - `GET /health`
-- `GET /demo/data`
-- `POST /demo/reset`
-- `GET /workers`, `/clients`, `/visits`
-- `POST /simulate/callout?worker_name=Patricia%20Davis&zone=South`
+- `GET /pilot/status`
+- `POST /simulate/callout`
 - `POST /recovery/run`
+- `POST /recovery/multi-run`
+- `GET /recovery/coverage-risk`
+- `GET /recommendations`
 - `POST /recommendations/approve`
 - `POST /recommendations/reject`
 - `POST /shift-offers`
-- `GET /audit`
-- `GET /integrations`
-- `POST /integrations/test`
-- `POST /import/workers` CSV upload
-- `POST /import/visits` CSV upload
+- `POST /shift-offers/{offer_id}/respond`
+- `POST /import/workers`
+- `POST /import/clients`
+- `POST /import/visits`
+- `POST /import/constraints`
 - `GET /export/changes`
 - `GET /export/changes.csv`
 
 ## Notes
 
-This v1.0 release is pilot-ready, not final enterprise architecture. It uses in-memory storage for fast demo/pilot deployment. The next production hardening step is Postgres persistence plus authentication.
+This is a pilot implementation. It keeps state in process memory for fast demos. For enterprise deployment, connect Postgres, object storage, and vendor connectors.

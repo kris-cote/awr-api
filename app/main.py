@@ -9,11 +9,11 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-VERSION = "1.0.0"
+VERSION = "2.0.0-pilot"
 
 app = FastAPI(
     title="OddLabs AWR Recovery API",
-    description="Pilot-ready API for Autonomous Workforce Recovery: imports, disruptions, recovery scoring, shift offers, approvals, audit logs, exports, and connector status.",
+    description="Pilot v2.0 API for Autonomous Workforce Recovery: dynamic scoring, CSV imports, multi-visit recovery, pair-care handling, shift offers, approvals, audit logs, exports, and connector status.",
     version=VERSION,
 )
 
@@ -402,10 +402,8 @@ def simulate_callout(worker_name: str, zone: Optional[str] = None, client_name: 
 
 @app.post("/recovery/run")
 def recovery_run(payload: RecoveryRequest):
-    workers = [Worker(**w) for w in (payload.workers or [Worker(**x) for x in []])]
+    workers = [Worker(**w) for w in payload.workers] if payload.workers else [Worker(**w) for w in DB["workers"]]
     # Accept either caller-supplied data or internal demo data.
-    if not payload.workers:
-        workers = [Worker(**w) for w in DB["workers"]]
     visits = [Visit(**v) for v in payload.visits] if payload.visits else [Visit(**v) for v in DB["visits"]]
     clients = [Client(**c) for c in payload.clients] if payload.clients else [Client(**c) for c in DB["clients"]]
     return generate_recovery(payload.disruption, workers, visits, clients)
@@ -540,3 +538,170 @@ def export_changes_csv():
     for row in DB["approvals"]:
         writer.writerow({k: row.get(k, "") for k in fieldnames})
     return {"filename": "approved_changes.csv", "content_type": "text/csv", "csv": output.getvalue()}
+
+
+@app.get("/recommendations")
+def list_recommendations(status: Optional[str] = None):
+    items = DB["recommendations"]
+    if status:
+        items = [r for r in items if norm(r.get("status")) == norm(status)]
+    return {"recommendations": items, "count": len(items), "api_version": VERSION}
+
+
+@app.get("/approvals")
+def list_approvals():
+    return {"approvals": DB["approvals"], "count": len(DB["approvals"]), "api_version": VERSION}
+
+
+@app.get("/imports")
+def list_imports():
+    return {"imports": DB["imports"], "count": len(DB["imports"]), "api_version": VERSION}
+
+
+@app.get("/exports")
+def list_exports():
+    return {"exports": DB["exports"], "count": len(DB["exports"]), "api_version": VERSION}
+
+
+@app.post("/import/clients")
+async def import_clients(file: UploadFile = File(...)):
+    text = (await file.read()).decode("utf-8-sig")
+    rows = list(csv.DictReader(io.StringIO(text)))
+    imported = []
+    for i, row in enumerate(rows, 1):
+        imported.append(Client(
+            id=row.get("id") or f"CIMP{i:03d}",
+            client_name=row.get("client_name") or row.get("name") or f"Client {i}",
+            address=row.get("address"),
+            zone=row.get("zone") or "Central",
+            care_requirements=parse_list(row.get("care_requirements", "")),
+            required_certifications=parse_list(row.get("required_certifications", "")),
+            pair_required=(row.get("pair_required", "false").lower() in {"true", "yes", "1"}),
+            continuity_preference=row.get("continuity_preference") or "Preferred",
+            risk_notes=row.get("risk_notes"),
+            risk_level=row.get("risk_level") or "Low",
+            status=row.get("status") or "Active",
+        ).model_dump())
+    DB["clients"] = imported
+    batch = {"source_system": "CSV", "file_name": file.filename, "import_type": "Clients", "records_imported": len(imported), "records_failed": 0, "status": "Completed", "uploaded_at": now_iso()}
+    DB["imports"].append(batch)
+    audit("Import Completed", f"Imported {len(imported)} clients from {file.filename}")
+    return batch
+
+
+@app.post("/import/constraints")
+async def import_constraints(file: UploadFile = File(...)):
+    text = (await file.read()).decode("utf-8-sig")
+    rows = list(csv.DictReader(io.StringIO(text)))
+    imported = []
+    for i, row in enumerate(rows, 1):
+        imported.append(Constraint(
+            id=row.get("id") or f"KIMP{i:03d}",
+            name=row.get("name") or f"Constraint {i}",
+            type=row.get("type") or "Certification",
+            priority=row.get("priority") or "Hard",
+            value=row.get("value"),
+            applies_to=row.get("applies_to"),
+            is_active=(row.get("is_active", "true").lower() in {"true", "yes", "1"}),
+            description=row.get("description"),
+        ).model_dump())
+    DB["constraints"] = imported
+    batch = {"source_system": "CSV", "file_name": file.filename, "import_type": "Constraints", "records_imported": len(imported), "records_failed": 0, "status": "Completed", "uploaded_at": now_iso()}
+    DB["imports"].append(batch)
+    audit("Import Completed", f"Imported {len(imported)} constraints from {file.filename}")
+    return batch
+
+
+@app.post("/recovery/multi-run")
+def recovery_multi_run(disruptions: List[Disruption]):
+    workers = [Worker(**w) for w in DB["workers"]]
+    visits = [Visit(**v) for v in DB["visits"]]
+    clients = [Client(**c) for c in DB["clients"]]
+    results = []
+    total_recommendations = 0
+    total_impacted = 0
+    for disruption in disruptions:
+        result = generate_recovery(disruption, workers, visits, clients)
+        results.append(result)
+        total_recommendations += result["recommendations_generated"]
+        total_impacted += result["visits_impacted"]
+    return {
+        "api_version": VERSION,
+        "status": "Completed",
+        "disruptions_processed": len(disruptions),
+        "visits_impacted": total_impacted,
+        "recommendations_generated": total_recommendations,
+        "results": results,
+    }
+
+
+@app.get("/recovery/coverage-risk")
+def coverage_risk():
+    visits = [Visit(**v) for v in DB["visits"]]
+    workers = [Worker(**w) for w in DB["workers"]]
+    clients = [Client(**c) for c in DB["clients"]]
+    risks = []
+    for visit in visits:
+        client = find_client(visit.client_name, clients)
+        eligible = []
+        for worker in workers:
+            rec = score_worker(worker, visit, Disruption(type="Coverage Risk", worker_name=None, zone=visit.zone), client)
+            if rec:
+                eligible.append(rec)
+        level = "Low"
+        if visit.status in {"Unassigned", "Disrupted"}:
+            level = "High"
+        if len(eligible) == 0:
+            level = "Critical"
+        elif len(eligible) <= 1:
+            level = "High"
+        elif len(eligible) <= 2:
+            level = "Medium"
+        risks.append({
+            "visit_id": visit.id,
+            "client_name": visit.client_name,
+            "date": visit.date,
+            "time": visit.time,
+            "zone": visit.zone,
+            "pair_required": visit.pair_required,
+            "eligible_workers": len(eligible),
+            "best_score": max([r.match_score for r in eligible], default=0),
+            "risk_level": level,
+            "reason": "No eligible workers" if len(eligible) == 0 else "Limited eligible coverage" if len(eligible) <= 2 else "Coverage available",
+        })
+    return {"api_version": VERSION, "coverage_risks": risks, "count": len(risks)}
+
+
+@app.post("/shift-offers/{offer_id}/respond")
+def respond_shift_offer(offer_id: str, response: str, response_notes: Optional[str] = None):
+    offer = next((o for o in DB["shift_offers"] if o["id"] == offer_id), None)
+    if not offer:
+        raise HTTPException(status_code=404, detail="Shift offer not found")
+    status = "Accepted" if norm(response) == "accepted" else "Declined" if norm(response) == "declined" else "Expired"
+    offer["status"] = status
+    offer["responded_at"] = now_iso()
+    offer["response_notes"] = response_notes
+    audit("Worker Status Change", f"Shift offer {offer_id} {status.lower()} by {offer.get('worker_name')}", entity_type="ShiftOffer", entity_id=offer_id, decision=status)
+    return {"status": status, "offer": offer}
+
+
+@app.get("/pilot/status")
+def pilot_status():
+    return {
+        "api_version": VERSION,
+        "status": "pilot-ready",
+        "capabilities": [
+            "dynamic worker scoring",
+            "multi-visit recovery",
+            "pair-care awareness",
+            "CSV worker/client/visit/constraint imports",
+            "approval/rejection workflow",
+            "shift offer lifecycle",
+            "audit log",
+            "approved change exports",
+            "coverage risk analysis",
+            "connector readiness dashboard",
+        ],
+        "counts": {k: len(v) for k, v in DB.items() if isinstance(v, list)},
+        "next_enterprise_steps": ["Postgres persistence", "Twilio/Teams notifications", "Procura/AlayaCare connector", "OR-Tools optimization"],
+    }
