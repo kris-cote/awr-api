@@ -9,7 +9,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-VERSION = "2.0.0-pilot"
+VERSION = "2.0.1-pilot"
 
 app = FastAPI(
     title="OddLabs AWR Recovery API",
@@ -32,6 +32,17 @@ def now_iso() -> str:
 
 def norm(v: Optional[str]) -> str:
     return (v or "").strip().lower()
+
+
+def as_model(model_cls, value):
+    """Accept either a Pydantic model instance or a dict and return model instance."""
+    if isinstance(value, model_cls):
+        return value
+    if hasattr(value, "model_dump"):
+        return model_cls(**value.model_dump())
+    if isinstance(value, dict):
+        return model_cls(**value)
+    raise TypeError(f"Cannot convert {type(value).__name__} to {model_cls.__name__}")
 
 
 class Worker(BaseModel):
@@ -402,11 +413,13 @@ def simulate_callout(worker_name: str, zone: Optional[str] = None, client_name: 
 
 @app.post("/recovery/run")
 def recovery_run(payload: RecoveryRequest):
-    workers = [Worker(**w) for w in payload.workers] if payload.workers else [Worker(**w) for w in DB["workers"]]
-    # Accept either caller-supplied data or internal demo data.
-    visits = [Visit(**v) for v in payload.visits] if payload.visits else [Visit(**v) for v in DB["visits"]]
-    clients = [Client(**c) for c in payload.clients] if payload.clients else [Client(**c) for c in DB["clients"]]
-    return generate_recovery(payload.disruption, workers, visits, clients)
+    workers = [as_model(Worker, w) for w in payload.workers] if payload.workers else [Worker(**w) for w in DB["workers"]]
+    # Accept either caller-supplied data or internal demo data. FastAPI/Pydantic
+    # may already parse nested payload items as Worker/Visit/Client objects.
+    visits = [as_model(Visit, v) for v in payload.visits] if payload.visits else [Visit(**v) for v in DB["visits"]]
+    clients = [as_model(Client, c) for c in payload.clients] if payload.clients else [Client(**c) for c in DB["clients"]]
+    disruption = as_model(Disruption, payload.disruption)
+    return generate_recovery(disruption, workers, visits, clients)
 
 
 @app.post("/recommendations/approve")
