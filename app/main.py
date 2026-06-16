@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 
-VERSION = "2.0.1-pilot"
+VERSION = "2.5.0-pilot-postgres"
 
 app = FastAPI(
     title="OddLabs AWR Recovery API",
-    description="Pilot v2.0 API for Autonomous Workforce Recovery: dynamic scoring, CSV imports, multi-visit recovery, pair-care handling, shift offers, approvals, audit logs, exports, and connector status.",
+    description="Pilot v2.5 API for Autonomous Workforce Recovery: Postgres-backed persistence, dynamic scoring, CSV imports, multi-visit recovery, pair-care handling, shift offers, approvals, audit logs, exports, and connector status.",
     version=VERSION,
 )
 
@@ -218,7 +222,101 @@ def seed_demo() -> None:
     ]
 
 
-seed_demo()
+def database_url() -> Optional[str]:
+    raw = os.getenv("DATABASE_URL")
+    if not raw:
+        return None
+    if raw.startswith("postgres://"):
+        return raw.replace("postgres://", "postgresql+psycopg://", 1)
+    if raw.startswith("postgresql://"):
+        return raw.replace("postgresql://", "postgresql+psycopg://", 1)
+    return raw
+
+
+def get_engine():
+    url = database_url()
+    if not url:
+        return None
+    return create_engine(url, pool_pre_ping=True)
+
+
+ENGINE = get_engine()
+PERSISTENT_COLLECTIONS = [
+    "workers", "clients", "visits", "constraints", "disruptions",
+    "recommendations", "approvals", "audit_logs", "shift_offers",
+    "imports", "exports", "integrations",
+]
+
+
+def table_ready() -> bool:
+    if ENGINE is None:
+        return False
+    try:
+        with ENGINE.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS awr_store (
+                    collection TEXT PRIMARY KEY,
+                    payload JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """))
+        return True
+    except SQLAlchemyError:
+        return False
+
+
+def save_collection(collection: str) -> None:
+    if ENGINE is None or collection not in PERSISTENT_COLLECTIONS:
+        return
+    try:
+        with ENGINE.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO awr_store (collection, payload, updated_at)
+                    VALUES (:collection, CAST(:payload AS JSONB), NOW())
+                    ON CONFLICT (collection) DO UPDATE
+                    SET payload = EXCLUDED.payload, updated_at = NOW()
+                """),
+                {"collection": collection, "payload": json.dumps(DB.get(collection, []))},
+            )
+    except SQLAlchemyError:
+        # Do not crash pilot workflows if persistence is temporarily unavailable.
+        return
+
+
+def persist_all() -> None:
+    for collection in PERSISTENT_COLLECTIONS:
+        save_collection(collection)
+
+
+def load_persistent() -> bool:
+    if not table_ready():
+        return False
+    loaded_any = False
+    try:
+        with ENGINE.begin() as conn:
+            rows = conn.execute(text("SELECT collection, payload FROM awr_store")).mappings().all()
+        for row in rows:
+            collection = row["collection"]
+            if collection in DB:
+                payload = row["payload"]
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+                DB[collection] = payload
+                loaded_any = True
+        return loaded_any
+    except SQLAlchemyError:
+        return False
+
+
+def initialize_data() -> None:
+    loaded = load_persistent()
+    if not loaded or not DB.get("workers") or not DB.get("visits"):
+        seed_demo()
+        persist_all()
+
+
+initialize_data()
 
 
 def audit(event_type: str, description: str, user: str = "system", entity_type: Optional[str] = None, entity_id: Optional[str] = None, decision: Optional[str] = None) -> Dict[str, Any]:
@@ -367,7 +465,33 @@ def generate_recovery(disruption: Disruption, workers: List[Worker], visits: Lis
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "oddlabs-awr-recovery-api", "version": VERSION, "timestamp": now_iso()}
+    return {"status": "ok", "service": "oddlabs-awr-recovery-api", "version": VERSION, "timestamp": now_iso(), "database": "postgres" if ENGINE is not None else "memory", "persistence_ready": table_ready() if ENGINE is not None else False}
+
+
+@app.get("/db/status")
+def db_status():
+    return {
+        "api_version": VERSION,
+        "database": "postgres" if ENGINE is not None else "memory",
+        "database_url_configured": bool(os.getenv("DATABASE_URL")),
+        "persistence_ready": table_ready() if ENGINE is not None else False,
+        "collections": {k: len(v) for k, v in DB.items() if isinstance(v, list)},
+    }
+
+
+@app.post("/db/persist")
+def db_persist():
+    persist_all()
+    return {"status": "persisted", "api_version": VERSION, "collections": PERSISTENT_COLLECTIONS}
+
+
+@app.post("/db/reset-demo")
+def db_reset_demo():
+    for key in ["disruptions", "recommendations", "approvals", "audit_logs", "shift_offers", "imports", "exports"]:
+        DB[key] = []
+    seed_demo()
+    persist_all()
+    return {"status": "reset", "api_version": VERSION, "collections": {k: len(v) for k, v in DB.items() if isinstance(v, list)}}
 
 
 @app.get("/demo/data")
@@ -380,6 +504,7 @@ def reset_demo():
     for key in ["disruptions", "recommendations", "approvals", "audit_logs", "shift_offers", "imports", "exports"]:
         DB[key] = []
     seed_demo()
+    persist_all()
     return {"status": "reset", "version": VERSION}
 
 
@@ -408,7 +533,9 @@ def simulate_callout(worker_name: str, zone: Optional[str] = None, client_name: 
         severity="High",
         description=f"{worker_name} called out. Recovery recommendations generated.",
     )
-    return generate_recovery(disruption, [Worker(**w) for w in DB["workers"]], [Visit(**v) for v in DB["visits"]], [Client(**c) for c in DB["clients"]])
+    result = generate_recovery(disruption, [Worker(**w) for w in DB["workers"]], [Visit(**v) for v in DB["visits"]], [Client(**c) for c in DB["clients"]])
+    persist_all()
+    return result
 
 
 @app.post("/recovery/run")
@@ -419,7 +546,9 @@ def recovery_run(payload: RecoveryRequest):
     visits = [as_model(Visit, v) for v in payload.visits] if payload.visits else [Visit(**v) for v in DB["visits"]]
     clients = [as_model(Client, c) for c in payload.clients] if payload.clients else [Client(**c) for c in DB["clients"]]
     disruption = as_model(Disruption, payload.disruption)
-    return generate_recovery(disruption, workers, visits, clients)
+    result = generate_recovery(disruption, workers, visits, clients)
+    persist_all()
+    return result
 
 
 @app.post("/recommendations/approve")
@@ -431,6 +560,7 @@ def approve(req: ApprovalRequest):
     approval = {"id": f"approval-{len(DB['approvals'])+1}", "recommendation_id": req.recommendation_id, "decision": "Approved", "decided_by": req.decided_by, "notes": req.notes, "timestamp": now_iso(), "replacement_worker": rec["candidate_worker"], "client_name": rec["client_name"], "visit_date": rec["visit_date"]}
     DB["approvals"].append(approval)
     audit("Approval Decision", f"Approved {rec['candidate_worker']} for {rec['client_name']}", user=req.decided_by, entity_type="Recommendation", entity_id=req.recommendation_id, decision="Approved")
+    persist_all()
     return {"status": "approved", "approval": approval, "recommendation": rec}
 
 
@@ -441,6 +571,7 @@ def reject(req: ApprovalRequest):
         raise HTTPException(status_code=404, detail="Recommendation not found")
     rec["status"] = "Rejected"
     audit("Approval Decision", f"Rejected {rec['candidate_worker']} for {rec['client_name']}", user=req.decided_by, entity_type="Recommendation", entity_id=req.recommendation_id, decision="Rejected")
+    persist_all()
     return {"status": "rejected", "recommendation": rec}
 
 
@@ -450,6 +581,7 @@ def create_shift_offer(req: ShiftOfferRequest):
     offer.update({"id": f"offer-{len(DB['shift_offers'])+1}", "status": "Sent", "sent_at": now_iso(), "responded_at": None})
     DB["shift_offers"].append(offer)
     audit("Worker Status Change", f"Shift offer sent to {req.worker_name} via {req.offer_channel}", entity_type="ShiftOffer", entity_id=offer["id"])
+    persist_all()
     return {"status": "sent", "offer": offer}
 
 
@@ -472,6 +604,7 @@ def integrations():
 def test_integration(req: IntegrationTestRequest):
     result = {"name": req.name, "system_type": req.system_type, "status": "Connected" if norm(req.system_type) == "csv" else "Not Configured", "sync_direction": req.sync_direction, "last_sync": now_iso(), "notes": "CSV works in v1.0. Vendor connectors require credentials/API access."}
     DB["integrations"].append(result)
+    persist_all()
     return result
 
 
@@ -505,6 +638,7 @@ async def import_workers(file: UploadFile = File(...)):
     batch = {"source_system": "CSV", "file_name": file.filename, "import_type": "Workers", "records_imported": len(imported), "records_failed": 0, "status": "Completed", "uploaded_at": now_iso()}
     DB["imports"].append(batch)
     audit("Import Completed", f"Imported {len(imported)} workers from {file.filename}")
+    persist_all()
     return batch
 
 
@@ -531,6 +665,7 @@ async def import_visits(file: UploadFile = File(...)):
     batch = {"source_system": "CSV", "file_name": file.filename, "import_type": "Visits", "records_imported": len(imported), "records_failed": 0, "status": "Completed", "uploaded_at": now_iso()}
     DB["imports"].append(batch)
     audit("Import Completed", f"Imported {len(imported)} visits from {file.filename}")
+    persist_all()
     return batch
 
 
@@ -539,6 +674,7 @@ def export_changes():
     export = {"export_type": "Approved Changes", "generated_at": now_iso(), "records_exported": len(DB["approvals"]), "records": DB["approvals"]}
     DB["exports"].append(export)
     audit("Export Generated", f"Generated approved changes export with {len(DB['approvals'])} records")
+    persist_all()
     return export
 
 
@@ -599,6 +735,7 @@ async def import_clients(file: UploadFile = File(...)):
     batch = {"source_system": "CSV", "file_name": file.filename, "import_type": "Clients", "records_imported": len(imported), "records_failed": 0, "status": "Completed", "uploaded_at": now_iso()}
     DB["imports"].append(batch)
     audit("Import Completed", f"Imported {len(imported)} clients from {file.filename}")
+    persist_all()
     return batch
 
 
@@ -622,6 +759,7 @@ async def import_constraints(file: UploadFile = File(...)):
     batch = {"source_system": "CSV", "file_name": file.filename, "import_type": "Constraints", "records_imported": len(imported), "records_failed": 0, "status": "Completed", "uploaded_at": now_iso()}
     DB["imports"].append(batch)
     audit("Import Completed", f"Imported {len(imported)} constraints from {file.filename}")
+    persist_all()
     return batch
 
 
@@ -695,6 +833,7 @@ def respond_shift_offer(offer_id: str, response: str, response_notes: Optional[s
     offer["responded_at"] = now_iso()
     offer["response_notes"] = response_notes
     audit("Worker Status Change", f"Shift offer {offer_id} {status.lower()} by {offer.get('worker_name')}", entity_type="ShiftOffer", entity_id=offer_id, decision=status)
+    persist_all()
     return {"status": status, "offer": offer}
 
 

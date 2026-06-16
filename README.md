@@ -1,43 +1,30 @@
-# OddLabs AWR Recovery API v1.0
+# OddLabs AWR Recovery API v2.5
 
-Pilot-ready backend for Autonomous Workforce Recovery.
+Pilot v2.5 adds Railway Postgres-backed persistence while preserving the v2 recovery engine.
 
-## Run locally
+## Deploy
 
-```bash
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
+1. Add a Railway Postgres service to the same project.
+2. Make sure Railway injects `DATABASE_URL` into the API service.
+3. Deploy this repo.
+4. Visit `/health` and `/db/status`.
 
-Open `/docs`.
+If `DATABASE_URL` is not present, the API falls back to in-memory mode.
 
-## Railway
-
-Start command:
-
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port $PORT
-```
-
-## Key endpoints
+## Important endpoints
 
 - `GET /health`
+- `GET /db/status`
+- `POST /db/persist`
+- `POST /db/reset-demo`
 - `GET /demo/data`
-- `POST /demo/reset`
-- `GET /workers`, `/clients`, `/visits`
-- `POST /simulate/callout?worker_name=Patricia%20Davis&zone=South`
+- `POST /simulate/callout`
 - `POST /recovery/run`
 - `POST /recommendations/approve`
 - `POST /recommendations/reject`
-- `POST /shift-offers`
-- `GET /audit`
-- `GET /integrations`
-- `POST /integrations/test`
-- `POST /import/workers` CSV upload
-- `POST /import/visits` CSV upload
-- `GET /export/changes`
-- `GET /export/changes.csv`
-
-## Notes
-
-This v1.0 release is pilot-ready, not final enterprise architecture. It uses in-memory storage for fast demo/pilot deployment. The next production hardening step is Postgres persistence plus authentication.
+- `POST /import/workers`
+- `POST /import/clients`
+- `POST /import/visits`
+- `POST /import/constraints`
+- `GET /recovery/coverage-risk`
+- `GET /pilot/status`
