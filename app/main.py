@@ -76,15 +76,40 @@ def health():
     return {"status": "ok", "service": "awrid-recovery-api", "version": "0.1.0"}
 
 @app.post("/simulate/callout")
-def simulate_callout(worker_name: str, zone: Optional[str] = None):
+def simulate_callout(worker_name: str, zone: str | None = None):
+
     return {
-        "id": f"disruption-{int(datetime.utcnow().timestamp())}",
-        "type": "Worker Callout",
-        "worker_name": worker_name,
-        "zone": zone,
-        "severity": "High",
-        "timestamp": datetime.utcnow().isoformat(),
-        "description": f"{worker_name} called out. Recovery run required."
+        "disruption": {
+            "worker_name": worker_name,
+            "zone": zone,
+            "severity": "High"
+        },
+        "recommendations": [
+            {
+                "worker": "David Kim",
+                "score": 94,
+                "overtime_risk": "Low",
+                "travel_impact": "Minimal",
+                "continuity_score": 92,
+                "reasoning": "Same zone, qualified, available."
+            },
+            {
+                "worker": "Sarah Chen",
+                "score": 87,
+                "overtime_risk": "Medium",
+                "travel_impact": "Moderate",
+                "continuity_score": 85,
+                "reasoning": "Qualified with minor travel increase."
+            },
+            {
+                "worker": "James Wilson",
+                "score": 81,
+                "overtime_risk": "High",
+                "travel_impact": "Low",
+                "continuity_score": 80,
+                "reasoning": "Qualified but nearing overtime threshold."
+            }
+        ]
     }
 
 def overtime_risk(worker: Worker, visit: Visit) -> str:
