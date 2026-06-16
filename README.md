@@ -1,12 +1,6 @@
-# OddLabs AWR Recovery API
+# OddLabs AWR Recovery API v1.0
 
-MVP backend for Autonomous Workforce Recovery.
-
-## Version
-
-`0.2.0`
-
-This update makes `/simulate/callout` return a full recovery payload with ranked recommendations, impacted visits, score breakdown fields, and reasoning.
+Pilot-ready backend for Autonomous Workforce Recovery.
 
 ## Run locally
 
@@ -15,56 +9,35 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Open:
+Open `/docs`.
 
-```text
-http://localhost:8000/docs
-```
+## Railway
 
-## Railway deployment
-
-1. Push this repo to GitHub.
-2. Railway redeploys automatically.
-3. Start command:
+Start command:
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
-## MVP endpoints
+## Key endpoints
 
 - `GET /health`
+- `GET /demo/data`
+- `POST /demo/reset`
+- `GET /workers`, `/clients`, `/visits`
 - `POST /simulate/callout?worker_name=Patricia%20Davis&zone=South`
 - `POST /recovery/run`
 - `POST /recommendations/approve`
+- `POST /recommendations/reject`
+- `POST /shift-offers`
+- `GET /audit`
+- `GET /integrations`
+- `POST /integrations/test`
+- `POST /import/workers` CSV upload
+- `POST /import/visits` CSV upload
 - `GET /export/changes`
+- `GET /export/changes.csv`
 
-## Base44 integration
+## Notes
 
-Base44's `Run Recovery` button can call:
-
-```text
-POST https://web-production-1e39e.up.railway.app/simulate/callout?worker_name=Patricia%20Davis&zone=South
-```
-
-Expected response:
-
-```json
-{
-  "recovery_run_id": "run-...",
-  "status": "Completed",
-  "disruption": {},
-  "visits_impacted": 1,
-  "impacted_visits": [],
-  "recommendations_generated": 3,
-  "recommendations": []
-}
-```
-
-## Next upgrades
-
-- Store approvals and recovery runs in Postgres
-- Add Base44 data-sync endpoint
-- Add CSV upload parser
-- Replace simple scoring with OR-Tools
-- Add n8n notification workflows
+This v1.0 release is pilot-ready, not final enterprise architecture. It uses in-memory storage for fast demo/pilot deployment. The next production hardening step is Postgres persistence plus authentication.
