@@ -1,13 +1,18 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
 from datetime import datetime
+from typing import Dict, List, Optional
+
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="OddLabs AWR Recovery API",
-    description="MVP API for Autonomous Workforce Recovery: schedule disruption simulation, replacement scoring, approvals, and export summaries.",
-    version="0.1.0",
+    description=(
+        "MVP API for Autonomous Workforce Recovery: disruption simulation, "
+        "replacement scoring, approvals, and export summaries."
+    ),
+    version="0.2.0",
 )
+
 
 class Worker(BaseModel):
     id: str
@@ -20,6 +25,7 @@ class Worker(BaseModel):
     travel_radius: float = 20
     restrictions: str = "None"
     status: str = "Active"
+
 
 class Visit(BaseModel):
     id: str
@@ -34,6 +40,7 @@ class Visit(BaseModel):
     pair_required: bool = False
     status: str = "Scheduled"
 
+
 class Disruption(BaseModel):
     id: str
     type: str
@@ -43,6 +50,7 @@ class Disruption(BaseModel):
     severity: str = "Medium"
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     description: Optional[str] = None
+
 
 class Recommendation(BaseModel):
     id: str
@@ -59,58 +67,135 @@ class Recommendation(BaseModel):
     reasoning: str
     status: str = "Pending"
 
+
 class RecoveryRequest(BaseModel):
     disruption: Disruption
     workers: List[Worker]
     visits: List[Visit]
+
 
 class ApprovalRequest(BaseModel):
     recommendation_id: str
     decided_by: str = "Coordinator"
     notes: Optional[str] = None
 
+
 DEMO_APPROVALS: List[Dict] = []
+
+DEMO_WORKERS: List[Worker] = [
+    Worker(
+        id="W017",
+        name="Patricia Davis",
+        zone="South",
+        certifications=["RN", "CPR", "IV Therapy", "Tracheostomy Care"],
+        availability="Full-Time",
+        max_hours=40,
+        hours_worked_this_week=31,
+        travel_radius=25,
+    ),
+    Worker(
+        id="W011",
+        name="James Rodriguez",
+        zone="South",
+        certifications=["RN", "CPR", "IV Therapy", "Wound Care"],
+        availability="On-Call",
+        max_hours=40,
+        hours_worked_this_week=26,
+        travel_radius=20,
+    ),
+    Worker(
+        id="W014",
+        name="Christopher Adams",
+        zone="West",
+        certifications=["RN", "CPR", "IV Therapy", "Palliative Care"],
+        availability="Full-Time",
+        max_hours=40,
+        hours_worked_this_week=33,
+        travel_radius=18,
+    ),
+    Worker(
+        id="W016",
+        name="Stephanie Hall",
+        zone="Central",
+        certifications=["RN", "CPR", "IV Therapy", "Tracheostomy Care"],
+        availability="Part-Time",
+        max_hours=36,
+        hours_worked_this_week=34,
+        travel_radius=15,
+    ),
+    Worker(
+        id="W021",
+        name="Karen Wilson",
+        zone="North",
+        certifications=["HCA", "CPR", "First Aid", "Manual Handling"],
+        availability="On-Call",
+        max_hours=30,
+        hours_worked_this_week=10,
+        travel_radius=18,
+    ),
+    Worker(
+        id="W007",
+        name="David Kim",
+        zone="North",
+        certifications=["HCA", "CPR", "First Aid", "Dementia Care"],
+        availability="On-Call",
+        max_hours=40,
+        hours_worked_this_week=23,
+        travel_radius=18,
+    ),
+    Worker(
+        id="W005",
+        name="Sarah Chen",
+        zone="North",
+        certifications=["HCA", "CPR", "First Aid", "Medication Admin"],
+        availability="PRN",
+        max_hours=32,
+        hours_worked_this_week=27,
+        travel_radius=16,
+    ),
+]
+
+DEMO_VISITS: List[Visit] = [
+    Visit(
+        id="V001",
+        client_name="Nancy Stewart",
+        date="2026-06-16",
+        time="08:30",
+        duration=45,
+        zone="South",
+        care_type="IV Therapy",
+        required_certifications=["RN", "IV Therapy"],
+        assigned_worker="Patricia Davis",
+        status="Scheduled",
+    ),
+    Visit(
+        id="V002",
+        client_name="Frank Patterson",
+        date="2026-06-16",
+        time="10:00",
+        duration=30,
+        zone="North",
+        care_type="Dementia Care",
+        required_certifications=["HCA", "Dementia Care"],
+        assigned_worker="Karen Wilson",
+        status="Scheduled",
+    ),
+]
+
+
+def normalize(value: Optional[str]) -> str:
+    return (value or "").strip().lower()
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "awrid-recovery-api", "version": "0.1.0"}
-
-@app.post("/simulate/callout")
-def simulate_callout(worker_name: str, zone: str | None = None):
-
     return {
-        "disruption": {
-            "worker_name": worker_name,
-            "zone": zone,
-            "severity": "High"
-        },
-        "recommendations": [
-            {
-                "worker": "David Kim",
-                "score": 94,
-                "overtime_risk": "Low",
-                "travel_impact": "Minimal",
-                "continuity_score": 92,
-                "reasoning": "Same zone, qualified, available."
-            },
-            {
-                "worker": "Sarah Chen",
-                "score": 87,
-                "overtime_risk": "Medium",
-                "travel_impact": "Moderate",
-                "continuity_score": 85,
-                "reasoning": "Qualified with minor travel increase."
-            },
-            {
-                "worker": "James Wilson",
-                "score": 81,
-                "overtime_risk": "High",
-                "travel_impact": "Low",
-                "continuity_score": 80,
-                "reasoning": "Qualified but nearing overtime threshold."
-            }
-        ]
+        "status": "ok",
+        "service": "awrid-recovery-api",
+        "version": "0.2.0",
+        "timestamp": datetime.utcnow().isoformat(),
     }
+
 
 def overtime_risk(worker: Worker, visit: Visit) -> str:
     projected = worker.hours_worked_this_week + (visit.duration / 60)
@@ -122,63 +207,82 @@ def overtime_risk(worker: Worker, visit: Visit) -> str:
         return "Low"
     return "None"
 
-def score_worker(worker: Worker, visit: Visit) -> Optional[Recommendation]:
+
+def score_worker(worker: Worker, visit: Visit, disruption_id: str) -> Optional[Recommendation]:
     if worker.status != "Active":
         return None
-    if visit.assigned_worker and worker.name == visit.assigned_worker:
+    if visit.assigned_worker and normalize(worker.name) == normalize(visit.assigned_worker):
         return None
+
     required = set(visit.required_certifications or [])
     held = set(worker.certifications or [])
     cert_match = required.issubset(held) if required else True
     if not cert_match:
         return None
-    zone_match = worker.zone == visit.zone
+
+    zone_match = normalize(worker.zone) == normalize(visit.zone)
     ot = overtime_risk(worker, visit)
+
     score = 50
     score += 25 if cert_match else 0
     score += 15 if zone_match else 5
     score += 10 if worker.availability in ["On-Call", "PRN", "Full-Time"] else 5
     score -= {"None": 0, "Low": 5, "Medium": 12, "High": 25}[ot]
-    score = max(0, min(100, score))
-    continuity = 70 if zone_match else 50
+
+    # Demo continuity proxy: same-zone care generally improves continuity.
+    continuity = 92 if zone_match and ot in ["None", "Low"] else 82 if zone_match else 68
     travel = "Minimal travel impact" if zone_match else f"Cross-zone travel from {worker.zone} to {visit.zone}"
-    reasoning = []
-    reasoning.append("required certifications match")
-    reasoning.append("same zone" if zone_match else "qualified but outside zone")
-    reasoning.append(f"overtime risk: {ot.lower()}")
+
+    reasoning_parts = [
+        "Required certifications match",
+        "same zone" if zone_match else "qualified but outside primary zone",
+        f"overtime risk: {ot.lower()}",
+        f"availability: {worker.availability}",
+    ]
+
     return Recommendation(
         id=f"rec-{worker.id}-{visit.id}",
-        disruption_id="",
+        disruption_id=disruption_id,
         visit_id=visit.id,
         candidate_worker=worker.name,
         candidate_worker_id=worker.id,
-        match_score=int(score),
+        match_score=max(0, min(100, int(score))),
         certification_match=cert_match,
         zone_match=zone_match,
         overtime_risk=ot,
         continuity_score=continuity,
         travel_impact=travel,
-        reasoning=", ".join(reasoning),
+        reasoning="; ".join(reasoning_parts),
     )
 
-@app.post("/recovery/run")
-def run_recovery(payload: RecoveryRequest):
-    disruption = payload.disruption
-    impacted = []
-    for visit in payload.visits:
-        if disruption.worker_name and visit.assigned_worker == disruption.worker_name:
+
+def find_impacted_visits(disruption: Disruption, visits: List[Visit]) -> List[Visit]:
+    impacted: List[Visit] = []
+    for visit in visits:
+        if disruption.worker_name and normalize(visit.assigned_worker) == normalize(disruption.worker_name):
             impacted.append(visit)
-        elif disruption.client_name and visit.client_name == disruption.client_name:
+        elif disruption.client_name and normalize(visit.client_name) == normalize(disruption.client_name):
             impacted.append(visit)
-        elif disruption.zone and visit.zone == disruption.zone and visit.status in ["Unassigned", "Disrupted"]:
+        elif disruption.zone and normalize(visit.zone) == normalize(disruption.zone) and visit.status in ["Unassigned", "Disrupted"]:
             impacted.append(visit)
+    return impacted
+
+
+def generate_recommendations(disruption: Disruption, workers: List[Worker], visits: List[Visit]) -> Dict:
+    impacted = find_impacted_visits(disruption, visits)
+
+    # If Base44 only sends a worker + zone through /simulate/callout, create a useful demo visit.
+    if not impacted:
+        if normalize(disruption.worker_name) == "patricia davis" or normalize(disruption.zone) == "south":
+            impacted = [DEMO_VISITS[0]]
+        elif normalize(disruption.worker_name) == "karen wilson" or normalize(disruption.zone) == "north":
+            impacted = [DEMO_VISITS[1]]
 
     recommendations: List[Recommendation] = []
     for visit in impacted:
-        for worker in payload.workers:
-            rec = score_worker(worker, visit)
+        for worker in workers:
+            rec = score_worker(worker, visit, disruption.id)
             if rec:
-                rec.disruption_id = disruption.id
                 recommendations.append(rec)
 
     recommendations = sorted(recommendations, key=lambda r: r.match_score, reverse=True)[:10]
@@ -187,9 +291,31 @@ def run_recovery(payload: RecoveryRequest):
         "status": "Completed",
         "disruption": disruption,
         "visits_impacted": len(impacted),
+        "impacted_visits": impacted,
         "recommendations_generated": len(recommendations),
         "recommendations": recommendations,
     }
+
+
+@app.post("/simulate/callout")
+def simulate_callout(worker_name: str, zone: Optional[str] = None, client_name: Optional[str] = None):
+    disruption = Disruption(
+        id=f"disruption-{int(datetime.utcnow().timestamp())}",
+        type="Worker Callout",
+        worker_name=worker_name,
+        client_name=client_name,
+        zone=zone,
+        severity="High",
+        timestamp=datetime.utcnow().isoformat(),
+        description=f"{worker_name} called out. Recovery recommendations generated.",
+    )
+    return generate_recommendations(disruption, DEMO_WORKERS, DEMO_VISITS)
+
+
+@app.post("/recovery/run")
+def run_recovery(payload: RecoveryRequest):
+    return generate_recommendations(payload.disruption, payload.workers, payload.visits)
+
 
 @app.post("/recommendations/approve")
 def approve_recommendation(request: ApprovalRequest):
@@ -202,6 +328,7 @@ def approve_recommendation(request: ApprovalRequest):
     }
     DEMO_APPROVALS.append(approval)
     return {"status": "approved", "approval": approval}
+
 
 @app.get("/export/changes")
 def export_changes():
